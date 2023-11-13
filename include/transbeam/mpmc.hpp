@@ -72,11 +72,12 @@ namespace transbeam::mpmc { namespace __detail {
                     // first we try and reserve a slot to write to
                     auto reservation = write_.load(std::memory_order_relaxed);
                     const auto rd = read_.load(std::memory_order_acquire);
-                    if (reservation == rd) { // no free slots to write to
+                    if (reservation ==
+                        (rd + capacity_)) { // no free slots to write to
                         return std::nullopt;
                     }
                     if (write_.compare_exchange_weak(
-                            reservation, (reservation + 1) % capacity_,
+                            reservation, reservation + 1,
                             std::memory_order_release,
                             std::memory_order_relaxed)) {
                         return reservation;
@@ -87,16 +88,12 @@ namespace transbeam::mpmc { namespace __detail {
                 return false;
             }
             auto wd = *mwd;
-            std::construct_at(buf_ + wd, std::forward<Args>(args)...);
-            while (!end_.compare_exchange_weak(wd, (wd + 1) % capacity_,
+            std::construct_at(buf_ + (wd % capacity_),
+                              std::forward<Args>(args)...);
+            while (!end_.compare_exchange_weak(wd, wd + 1,
                                                std::memory_order_release,
                                                std::memory_order_relaxed)) {
-            }
-            auto rd = read_.load(std::memory_order_relaxed);
-            if (rd == out_of_bounds) {
-                // doesn't matter if this fails since as long as its not out of bounds anymore its fine
-                read_.compare_exchange_strong(rd, 0, std::memory_order::release,
-                                              std::memory_order_relaxed);
+                wd = *mwd;
             }
             return true;
         }
@@ -105,10 +102,10 @@ namespace transbeam::mpmc { namespace __detail {
             while (true) {
                 auto rd = read_.load(std::memory_order_relaxed);
                 const auto last = end_.load(std::memory_order_acquire);
-                if (rd == out_of_bounds || rd == last) { // nothing left to read
+                if (rd == last) { // nothing left to read
                     return std::nullopt;
                 }
-                if (read_.compare_exchange_weak(rd, (rd + 1) % capacity_,
+                if (read_.compare_exchange_weak(rd, rd + 1,
                                                 std::memory_order_release,
                                                 std::memory_order_relaxed)) {
                     auto el = std::move(buf_[rd]);
@@ -135,7 +132,7 @@ namespace transbeam::mpmc { namespace __detail {
         /// 1 past the end of the valid range
         std::atomic<size_type> end_{0};
         /// the index of the first element
-        std::atomic<size_type> read_{out_of_bounds};
+        std::atomic<size_type> read_{0};
     };
 
 }} // namespace transbeam::mpmc::__detail
