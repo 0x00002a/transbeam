@@ -3,6 +3,7 @@
 #include <atomic>
 #include <concepts>
 #include <deque>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -14,17 +15,26 @@ namespace transbeam::mpmc { namespace __detail {
     /// fixed size lock-free ring buffer
     template<typename T>
     class bounded_ringbuf {
-        using vptr_t = std::atomic<T*>;
-
-        using alloc_t = std::allocator<T>;
-
     public:
         using size_type = std::size_t;
         using value_type = T;
 
+    private:
+        using vptr_t = std::atomic<T*>;
+
+        using alloc_t = std::allocator<T>;
+        constexpr static auto out_of_bounds =
+            std::numeric_limits<size_type>::max();
+
+    public:
         constexpr explicit bounded_ringbuf(size_type capacity)
             : alloc_{}, buf_(alloc_.allocate(capacity)), capacity_{capacity}
         {
+            if (capacity == std::numeric_limits<size_type>::max() ||
+                capacity == 0) {
+                throw std::logic_error{
+                    "invalid capacity, too big or too small"};
+            }
         }
         constexpr ~bounded_ringbuf()
         {
@@ -35,11 +45,20 @@ namespace transbeam::mpmc { namespace __detail {
             alloc_.deallocate(buf_, capacity_);
         }
 
-        constexpr auto size() const
+        constexpr auto size() const -> size_type
         {
-            const auto w = write_.load(std::memory_order_relaxed);
+            const auto w = end_.load(std::memory_order_relaxed);
             const auto r = read_.load(std::memory_order_relaxed);
-            return w > r ? w - r : r - w;
+            if (r == out_of_bounds) {
+                return 0;
+            }
+            if (r > w) {
+                // end has lapped
+                return capacity_ - r + w;
+            }
+            else {
+                return w - r;
+            }
         }
         constexpr auto max_size() const { return capacity_; }
         constexpr auto empty() const { return size() == 0; }
@@ -53,14 +72,14 @@ namespace transbeam::mpmc { namespace __detail {
                     // first we try and reserve a slot to write to
                     auto reservation = write_.load(std::memory_order_relaxed);
                     const auto rd = read_.load(std::memory_order_acquire);
-                    const auto wanted = (reservation + 1) % capacity_;
-                    if (wanted == rd) { // no free slots to write to
+                    if (reservation == rd) { // no free slots to write to
                         return std::nullopt;
                     }
                     if (write_.compare_exchange_weak(
-                            reservation, wanted, std::memory_order_release,
+                            reservation, (reservation + 1) % capacity_,
+                            std::memory_order_release,
                             std::memory_order_relaxed)) {
-                        return wanted;
+                        return reservation;
                     }
                 }
             }();
@@ -73,6 +92,12 @@ namespace transbeam::mpmc { namespace __detail {
                                                std::memory_order_release,
                                                std::memory_order_relaxed)) {
             }
+            auto rd = read_.load(std::memory_order_relaxed);
+            if (rd == out_of_bounds) {
+                // doesn't matter if this fails since as long as its not out of bounds anymore its fine
+                read_.compare_exchange_strong(rd, 0, std::memory_order::release,
+                                              std::memory_order_relaxed);
+            }
             return true;
         }
         auto pop() -> std::optional<T>
@@ -80,7 +105,7 @@ namespace transbeam::mpmc { namespace __detail {
             while (true) {
                 auto rd = read_.load(std::memory_order_relaxed);
                 const auto last = end_.load(std::memory_order_acquire);
-                if (rd == last) { // nothing left to read
+                if (rd == out_of_bounds || rd == last) { // nothing left to read
                     return std::nullopt;
                 }
                 if (read_.compare_exchange_weak(rd, (rd + 1) % capacity_,
@@ -110,7 +135,7 @@ namespace transbeam::mpmc { namespace __detail {
         /// 1 past the end of the valid range
         std::atomic<size_type> end_{0};
         /// the index of the first element
-        std::atomic<size_type> read_{0};
+        std::atomic<size_type> read_{out_of_bounds};
     };
 
 }} // namespace transbeam::mpmc::__detail
