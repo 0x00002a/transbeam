@@ -1,8 +1,10 @@
 
 #include <array>
+#include <chrono>
 #include <format>
 #include <optional>
 #include <ostream>
+#include <stop_token>
 #include <thread>
 #include <vector>
 
@@ -54,6 +56,29 @@ TEST_SUITE("mpmc")
             CHECK(rb.pop() == std::optional{3});
             CHECK(rb.pop() == std::optional{5});
             CHECK(rb.empty());
+        }
+        TEST_CASE("multi threaded unbuffered doesn't race")
+        {
+            transbeam::mpmc::__detail::bounded_ringbuf<int> rb{1};
+            std::jthread t1{[&](std::stop_token stop) mutable {
+                while (!stop.stop_requested()) {
+                    rb.try_emplace(1);
+                }
+            }};
+
+            std::jthread t2{[&](auto stop) mutable {
+                while (!stop.stop_requested()) {
+                    rb.try_emplace(2);
+                }
+            }};
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            REQUIRE(rb.max_size() == rb.size());
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            REQUIRE(rb.pop());
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            REQUIRE(rb.pop());
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            REQUIRE(!rb.try_emplace(6));
         }
     }
 }

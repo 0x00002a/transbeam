@@ -72,12 +72,13 @@ namespace transbeam::mpmc { namespace __detail {
                     // first we try and reserve a slot to write to
                     auto reservation = write_.load(std::memory_order_relaxed);
                     const auto rd = read_.load(std::memory_order_acquire);
-                    if (reservation ==
-                        (rd + capacity_)) { // no free slots to write to
+                    if ((reservation % wrap_pt()) ==
+                        ((rd + capacity_) %
+                         wrap_pt())) { // no free slots to write to
                         return std::nullopt;
                     }
                     if (write_.compare_exchange_weak(
-                            reservation, reservation + 1,
+                            reservation, (reservation + 1) % wrap_pt(),
                             std::memory_order_release,
                             std::memory_order_relaxed)) {
                         return reservation;
@@ -90,7 +91,7 @@ namespace transbeam::mpmc { namespace __detail {
             auto wd = *mwd;
             std::construct_at(buf_ + (wd % capacity_),
                               std::forward<Args>(args)...);
-            while (!end_.compare_exchange_weak(wd, wd + 1,
+            while (!end_.compare_exchange_weak(wd, (wd + 1) % wrap_pt(),
                                                std::memory_order_release,
                                                std::memory_order_relaxed)) {
                 wd = *mwd;
@@ -105,10 +106,10 @@ namespace transbeam::mpmc { namespace __detail {
                 if (rd == last) { // nothing left to read
                     return std::nullopt;
                 }
-                if (read_.compare_exchange_weak(rd, rd + 1,
+                if (read_.compare_exchange_weak(rd, (rd + 1) % wrap_pt(),
                                                 std::memory_order_release,
                                                 std::memory_order_relaxed)) {
-                    auto el = std::move(buf_[rd]);
+                    auto el = std::move(buf_[rd % capacity_]);
                     buf_[rd].~T();
                     return el;
                 }
@@ -123,6 +124,7 @@ namespace transbeam::mpmc { namespace __detail {
             }
             return exp;
         }
+        constexpr auto wrap_pt() { return capacity_ + 1; }
 
         alloc_t alloc_;
         T* buf_;
