@@ -2,22 +2,28 @@
 
 #include <atomic>
 #include <concepts>
+#include <deque>
+#include <memory>
+#include <optional>
 #include <stdexcept>
 
 #include <transbeam/__detail/util.hpp>
 
 namespace transbeam::mpmc { namespace __detail {
+    // fixme: more writers than capacity... do we race on the lap? I think we do
     /// fixed size lock-free ring buffer
     template<typename T>
     class bounded_ringbuf {
         using vptr_t = std::atomic<T*>;
 
+        using alloc_t = std::allocator<T>;
+
     public:
         using size_type = std::size_t;
         using value_type = T;
 
-        explicit bounded_ringbuf(size_type capacity)
-            : buf_{new T[capacity]}, capacity_{capacity}
+        constexpr explicit bounded_ringbuf(size_type capacity)
+            : alloc_{}, buf_(alloc_.allocate(capacity)), capacity_{capacity}
         {
         }
 
@@ -32,25 +38,51 @@ namespace transbeam::mpmc { namespace __detail {
 
         template<typename... Args>
             requires(std::constructible_from<T, Args...>)
-        auto emplace(Args&&... args) -> bool
+        auto try_emplace(Args&&... args) -> bool
         {
-            const auto curr_write = write_.load();
-            if (::transbeam::__detail::util::diff(curr_write, read_.load()) ==
-                0) {
-                throw std::out_of_range{
-                    "tried to emplace into full ring buffer"};
+            const auto mwd = [this]() -> std::optional<size_type> {
+                while (true) {
+                    // first we try and reserve a slot to write to
+                    auto reservation = write_.load(std::memory_order_relaxed);
+                    const auto rd = read_.load(std::memory_order_acquire);
+                    const auto wanted = (reservation + 1) % capacity_;
+                    if (wanted == rd) { // no free slots to write to
+                        return std::nullopt;
+                    }
+                    if (write_.compare_exchange_weak(
+                            reservation, wanted, std::memory_order_release,
+                            std::memory_order_relaxed)) {
+                        return wanted;
+                    }
+                }
+            }();
+            if (!mwd) {
+                return false;
             }
-            const auto wd = advance_ptr();
+            auto wd = *mwd;
+            std::construct_at(buf_ + wd, std::forward<Args>(args)...);
+            while (!end_.compare_exchange_weak(wd, (wd + 1) % capacity_,
+                                               std::memory_order_release,
+                                               std::memory_order_relaxed)) {
+            }
+            return true;
         }
         auto pop() -> std::optional<T>
         {
-            const auto rd = read_;
-            if (rd == write_.load()) {
-                return std::nullopt;
+            while (true) {
+                auto rd = read_.load(std::memory_order_relaxed);
+                const auto last = end_.load(std::memory_order_acquire);
+                if (rd == last) { // nothing left to read
+                    return std::nullopt;
+                }
+                if (read_.compare_exchange_weak(rd, (rd + 1) % capacity_,
+                                                std::memory_order_release,
+                                                std::memory_order_relaxed)) {
+                    auto el = std::move(buf_[rd]);
+                    buf_[rd].~T();
+                    return el;
+                }
             }
-            auto el = std::move(buf_[rd]);
-            read_ = (read_ + 1) % capacity_;
-            return el;
         }
 
     private:
@@ -62,10 +94,14 @@ namespace transbeam::mpmc { namespace __detail {
             return exp;
         }
 
+        alloc_t alloc_;
         T* buf_;
         size_type capacity_;
+        /// index of the next free location to write to
         std::atomic<size_type> write_{0};
-        std::atomic<size_type> busy_write_{0};
+        /// 1 past the end of the valid range
+        std::atomic<size_type> end_{0};
+        /// the index of the first element
         std::atomic<size_type> read_{0};
     };
 
