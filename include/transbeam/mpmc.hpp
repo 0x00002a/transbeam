@@ -26,6 +26,14 @@ namespace transbeam::mpmc { namespace __detail {
             : alloc_{}, buf_(alloc_.allocate(capacity)), capacity_{capacity}
         {
         }
+        constexpr ~bounded_ringbuf()
+        {
+            // it is _not_ safe for multiple threads to still have a handle on us at this point
+            // so don't bother handling that case
+            while (pop().has_value()) {
+            }
+            alloc_.deallocate(buf_, capacity_);
+        }
 
         constexpr auto size() const
         {
