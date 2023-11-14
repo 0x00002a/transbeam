@@ -147,8 +147,8 @@ namespace transbeam::mpmc { namespace __detail {
 
                 // if the write stamp is ahead by 1 we are allowed to read this
                 if (rd + 1 == stamp) {
-                    const auto next_rd = [this, rd, lap] {
-                        if (rd + 1 >= capacity_) {
+                    const auto next_rd = [this, rd, lap, idx] {
+                        if (idx + 1 >= capacity_) {
                             return lap + one_lap_;
                         }
                         else {
