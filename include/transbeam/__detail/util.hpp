@@ -2,7 +2,10 @@
 
 #include <array>
 #include <concepts>
+#include <condition_variable>
 #include <deque>
+#include <mutex>
+#include <vector>
 
 namespace transbeam::__detail::util {
 
@@ -24,5 +27,19 @@ private:
 };
 
 constexpr auto diff(auto a, auto b) { return a > b ? a - b : b - a; }
+
+class wait_group {
+public:
+    void blocking_wait()
+    {
+        std::unique_lock l{m_};
+        cond_.wait(l);
+    }
+    void notify_one() { cond_.notify_one(); }
+
+private:
+    std::condition_variable cond_;
+    std::mutex m_;
+};
 
 } // namespace transbeam::__detail::util

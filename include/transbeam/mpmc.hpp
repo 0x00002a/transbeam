@@ -11,8 +11,10 @@
 #include <stdexcept>
 
 #include <transbeam/__detail/util.hpp>
+#include <type_traits>
 
-namespace transbeam::mpmc { namespace __detail {
+namespace transbeam::mpmc {
+namespace __detail {
     // fixme: more writers than capacity... do we race on the lap? I think we do
     /// fixed size lock-free ring buffer
     template<typename T>
@@ -201,5 +203,105 @@ namespace transbeam::mpmc { namespace __detail {
         /// the index of the first element
         std::atomic<size_type> read_{0};
     };
+    template<typename T>
+    struct shared_data {
+        bounded_ringbuf<T> buf;
+        ::transbeam::__detail::util::wait_group writers;
+        ::transbeam::__detail::util::wait_group readers;
+        shared_data(std::size_t cap) : buf{cap} {}
+    };
 
-}} // namespace transbeam::mpmc::__detail
+} // namespace __detail
+template<typename T>
+class sender;
+
+template<typename T>
+class receiver {
+public:
+    auto try_recv() -> std::optional<T>
+    {
+        auto r = shared_->buf.pop();
+        if (r.has_value()) {
+            shared_->writers.notify_one();
+        }
+        return r;
+    }
+    auto recv() -> T
+    {
+        while (true) {
+            auto r = this->try_recv();
+            if (!r) {
+                shared_->readers.blocking_wait();
+            }
+            else {
+                return std::move(*r);
+            }
+        }
+    }
+
+private:
+    receiver(std::shared_ptr<__detail::shared_data<T>> shared)
+        : shared_{std::move(shared)}
+    {
+    }
+    template<typename E>
+    friend auto bounded(std::size_t capacity)
+        -> std::pair<sender<E>, receiver<E>>;
+
+    std::shared_ptr<__detail::shared_data<T>> shared_;
+};
+
+template<typename T>
+class sender {
+public:
+    template<typename... Args>
+        requires(std::constructible_from<T, Args...>)
+    auto try_send(Args&&... args) -> bool
+    {
+        if (shared_->buf.try_emplace(std::forward<Args>(args)...)) {
+            shared_->readers.notify_one();
+            return true;
+        }
+        else {
+            return false;
+        }
+    }
+
+    template<typename... Args>
+        requires(std::constructible_from<T, Args...>)
+    void send(Args&&... args)
+    {
+        while (!this->try_send(std::forward<Args>(args)...)) {
+            shared_->writers.blocking_wait();
+        }
+    }
+
+private:
+    sender(std::shared_ptr<__detail::shared_data<T>> shared)
+        : shared_{std::move(shared)}
+    {
+    }
+    template<typename E>
+    friend auto bounded(std::size_t capacity)
+        -> std::pair<sender<E>, receiver<E>>;
+
+    std::shared_ptr<__detail::shared_data<T>> shared_;
+};
+
+template<typename T>
+auto bounded(std::size_t capacity) -> std::pair<sender<T>, receiver<T>>
+{
+    auto shared = std::make_shared<__detail::shared_data<T>>(capacity);
+    return std::pair{sender{shared}, receiver{std::move(shared)}};
+}
+
+static_assert(std::is_copy_constructible_v<receiver<int>>);
+static_assert(std::is_move_constructible_v<receiver<int>>);
+static_assert(std::is_copy_assignable_v<receiver<int>>);
+static_assert(std::is_move_assignable_v<receiver<int>>);
+
+static_assert(std::is_copy_constructible_v<sender<int>>);
+static_assert(std::is_move_constructible_v<sender<int>>);
+static_assert(std::is_copy_assignable_v<sender<int>>);
+static_assert(std::is_move_assignable_v<sender<int>>);
+} // namespace transbeam::mpmc

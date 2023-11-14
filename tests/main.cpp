@@ -86,5 +86,74 @@ TEST_SUITE("mpmc")
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             REQUIRE(!rb.try_emplace(6));
         }
+        TEST_CASE(
+            "constructing a ringbuf doesn't call constructors of elements")
+        {
+            static bool constructed = false;
+            struct thing {
+                thing() { constructed = true; }
+            };
+            transbeam::mpmc::__detail::bounded_ringbuf<thing> rb{30};
+            REQUIRE(!constructed);
+            rb.try_emplace();
+            REQUIRE(constructed);
+        }
+        TEST_CASE("destroying a ringbuf calls destructors")
+        {
+            struct thing {
+                bool* destroyed;
+                thing(bool* destroyed) : destroyed{destroyed}
+                {
+                    REQUIRE(destroyed != nullptr);
+                    CHECK(!*destroyed);
+                }
+                ~thing() { *destroyed = true; }
+            };
+            bool d1{false};
+            bool d2{false};
+            {
+                transbeam::mpmc::__detail::bounded_ringbuf<thing> rb{10};
+                rb.try_emplace(&d1);
+                rb.try_emplace(&d2);
+            }
+            CHECK(d1);
+            CHECK(d2);
+        }
+    }
+    TEST_SUITE("bounded channel")
+    {
+        using namespace transbeam;
+        TEST_CASE("sending on one thread")
+        {
+            auto [tx, rx] = mpmc::bounded<int>(1);
+            tx.send(5);
+            CHECK(!tx.try_send(3));
+            REQUIRE(rx.recv() == 5);
+        }
+        TEST_CASE("multithreaded wakes up waiting read thread")
+        {
+            int read{0};
+
+            auto [tx, rx] = mpmc::bounded<int>(1);
+            {
+                std::jthread rd{[&read, rx]() mutable { read = rx.recv(); }};
+                CHECK(read == 0);
+                tx.send(1);
+            }
+            CHECK(read == 1);
+        }
+
+        TEST_CASE("multithreaded wakes up waiting write thread")
+        {
+            int read{0};
+
+            auto [tx, rx] = mpmc::bounded<int>(1);
+            tx.send(1);
+            {
+                std::jthread wd{[&read, tx]() mutable { tx.send(2); }};
+                CHECK(rx.recv() == 1);
+            }
+            CHECK(rx.recv() == 2);
+        }
     }
 }
