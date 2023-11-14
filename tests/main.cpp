@@ -155,5 +155,12 @@ TEST_SUITE("mpmc")
             }
             CHECK(rx.recv() == 2);
         }
+        TEST_CASE("channel can be resubscribed")
+        {
+            auto [tx, rx] = mpmc::bounded<int>(1);
+
+            tx.subscribe();
+            rx.subscribe();
+        }
     }
 }

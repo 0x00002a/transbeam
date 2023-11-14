@@ -239,6 +239,8 @@ public:
         }
     }
 
+    auto subscribe() const -> sender<T> { return sender{shared_}; }
+
 private:
     receiver(std::shared_ptr<__detail::shared_data<T>> shared)
         : shared_{std::move(shared)}
@@ -247,6 +249,7 @@ private:
     template<typename E>
     friend auto bounded(std::size_t capacity)
         -> std::pair<sender<E>, receiver<E>>;
+    friend class sender<T>;
 
     std::shared_ptr<__detail::shared_data<T>> shared_;
 };
@@ -275,6 +278,7 @@ public:
             shared_->writers.blocking_wait();
         }
     }
+    auto subscribe() const -> receiver<T> { return receiver{shared_}; }
 
 private:
     sender(std::shared_ptr<__detail::shared_data<T>> shared)
@@ -284,6 +288,7 @@ private:
     template<typename E>
     friend auto bounded(std::size_t capacity)
         -> std::pair<sender<E>, receiver<E>>;
+    friend class receiver<T>;
 
     std::shared_ptr<__detail::shared_data<T>> shared_;
 };
