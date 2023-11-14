@@ -1,6 +1,8 @@
 #pragma once
 
 #include <atomic>
+#include <bit>
+#include <cassert>
 #include <concepts>
 #include <deque>
 #include <limits>
@@ -26,38 +28,60 @@ namespace transbeam::mpmc { namespace __detail {
         constexpr static auto out_of_bounds =
             std::numeric_limits<size_type>::max();
 
+        struct slot {
+            std::atomic<size_type> stamp;
+            ::transbeam::__detail::util::lazy_init<T> entry;
+        };
+
     public:
         constexpr explicit bounded_ringbuf(size_type capacity)
-            : alloc_{}, buf_(alloc_.allocate(capacity)), capacity_{capacity}
+            : buf_(new slot[capacity]),
+              capacity_{capacity},
+              mark_bit_{std::bit_ceil(capacity + 1)},
+              one_lap_{mark_bit_ * 2}
         {
             if (capacity == std::numeric_limits<size_type>::max() ||
                 capacity == 0) {
                 throw std::logic_error{
                     "invalid capacity, too big or too small"};
             }
+            for (size_type n = 0; n != capacity_; ++n) {
+                buf_[n].stamp = n;
+            }
         }
         constexpr ~bounded_ringbuf()
         {
             // it is _not_ safe for multiple threads to still have a handle on us at this point
             // so don't bother handling that case
-            while (pop().has_value()) {
+            const auto wd = write_.load();
+            const auto rd = read_.load();
+            const auto len = size();
+            for (size_type n = 0; n != len; ++n) {
+                const auto idx = [this, n, rd, wd] {
+                    if (rd + n < capacity_) {
+                        return rd + n;
+                    }
+                    else {
+                        return capacity_ - rd + n;
+                    }
+                }();
+                std::destroy_at(buf_[idx].entry.read());
             }
-            alloc_.deallocate(buf_, capacity_);
         }
 
         constexpr auto size() const -> size_type
         {
-            const auto w = end_.load(std::memory_order_relaxed);
-            const auto r = read_.load(std::memory_order_relaxed);
-            if (r == out_of_bounds) {
-                return 0;
-            }
-            if (r > w) {
-                // end has lapped
-                return capacity_ - r + w;
-            }
-            else {
-                return w - r;
+            while (true) {
+                const auto wd = write_.load();
+                const auto rd = read_.load();
+                if (write_.load() == wd) {
+                    const auto widx = wd & (mark_bit_ - 1);
+                    const auto ridx = rd & (mark_bit_ - 1);
+                    return widx > ridx               ? widx - ridx
+                           : ridx > widx             ? capacity_ - widx + ridx
+                           : (wd & ~mark_bit_) == rd ? 0
+                                                     : capacity_;
+                }
             }
         }
         constexpr auto max_size() const { return capacity_; }
@@ -67,51 +91,91 @@ namespace transbeam::mpmc { namespace __detail {
             requires(std::constructible_from<T, Args...>)
         auto try_emplace(Args&&... args) -> bool
         {
-            const auto mwd = [this]() -> std::optional<size_type> {
-                while (true) {
-                    // first we try and reserve a slot to write to
-                    auto reservation = write_.load(std::memory_order_relaxed);
-                    const auto rd = read_.load(std::memory_order_acquire);
-                    if ((reservation % wrap_pt()) ==
-                        ((rd + capacity_) %
-                         wrap_pt())) { // no free slots to write to
-                        return std::nullopt;
-                    }
+            auto wd = write_.load(std::memory_order_relaxed);
+
+            while (true) {
+                const auto idx = wd & (mark_bit_ - 1);
+                const auto lap = wd & ~(one_lap_ - 1);
+                slot& s = buf_[idx];
+                const auto stamp = s.stamp.load(std::memory_order_acquire);
+
+                if (wd == stamp) {
+                    const auto next_wd = [this, idx, lap, wd] {
+                        if (idx + 1 >= capacity_) {
+                            // wrap around and increase lap
+                            return lap + one_lap_;
+                        }
+                        else {
+                            return wd + 1;
+                        }
+                    }();
                     if (write_.compare_exchange_weak(
-                            reservation, (reservation + 1) % wrap_pt(),
-                            std::memory_order_release,
+                            wd, next_wd, std::memory_order_seq_cst,
                             std::memory_order_relaxed)) {
-                        return reservation;
+                        // now we can actually do the update
+                        s.entry.write(std::forward<Args>(args)...);
+                        s.stamp.store(wd + 1, std::memory_order_release);
+                        return true;
                     }
                 }
-            }();
-            if (!mwd) {
-                return false;
-            }
-            auto wd = *mwd;
-            std::construct_at(buf_ + (wd % capacity_),
-                              std::forward<Args>(args)...);
-            while (!end_.compare_exchange_weak(wd, (wd + 1) % wrap_pt(),
-                                               std::memory_order_release,
-                                               std::memory_order_relaxed)) {
-                wd = *mwd;
+                else if (stamp + one_lap_ == wd + 1) {
+                    // we've come back on ourselves, can't overwrite this
+                    std::atomic_thread_fence(std::memory_order_seq_cst);
+                    const auto rd = read_.load(std::memory_order_relaxed);
+                    if (rd + one_lap_ == wd) {
+                        // if head is behind by a lap its full
+                        return false;
+                    }
+                    wd = write_.load(std::memory_order_relaxed);
+                }
+                else {
+                    wd = write_.load(std::memory_order_relaxed);
+                }
             }
             return true;
         }
         auto pop() -> std::optional<T>
         {
+            auto rd = read_.load(std::memory_order_relaxed);
+
             while (true) {
-                auto rd = read_.load(std::memory_order_relaxed);
-                const auto last = end_.load(std::memory_order_acquire);
-                if (rd == last) { // nothing left to read
-                    return std::nullopt;
+                const auto idx = rd & (mark_bit_ - 1);
+                const auto lap = rd & ~(one_lap_ - 1);
+
+                slot& s = buf_[idx];
+                const auto stamp = s.stamp.load(std::memory_order_acquire);
+
+                // if the write stamp is ahead by 1 we are allowed to read this
+                if (rd + 1 == stamp) {
+                    const auto next_rd = [this, rd, lap] {
+                        if (rd + 1 >= capacity_) {
+                            return lap + one_lap_;
+                        }
+                        else {
+                            return rd + 1;
+                        }
+                    }();
+                    if (read_.compare_exchange_weak(
+                            rd, next_rd, std::memory_order::seq_cst,
+                            std::memory_order_relaxed)) {
+                        // now we can actually read
+                        auto ent = T{static_cast<T&&>(*s.entry.read())};
+                        std::destroy_at(s.entry.read());
+                        s.stamp.store(rd + one_lap_, std::memory_order_release);
+                        return ent;
+                    }
                 }
-                if (read_.compare_exchange_weak(rd, (rd + 1) % wrap_pt(),
-                                                std::memory_order_release,
-                                                std::memory_order_relaxed)) {
-                    auto el = std::move(buf_[rd % capacity_]);
-                    buf_[rd].~T();
-                    return el;
+                else if (rd == stamp) {
+                    std::atomic_thread_fence(std::memory_order_seq_cst);
+                    const auto wd = write_.load(std::memory_order_relaxed);
+                    if ((wd & ~mark_bit_) == rd) {
+                        // if on same lap and index then we are full
+                        return std::nullopt;
+                    }
+                    rd = read_.load(std::memory_order_relaxed);
+                }
+                else {
+                    rd = read_.load(std::memory_order_relaxed);
                 }
             }
         }
@@ -124,11 +188,12 @@ namespace transbeam::mpmc { namespace __detail {
             }
             return exp;
         }
-        constexpr auto wrap_pt() { return capacity_ + 1; }
+        constexpr auto wrap_pt() { return capacity_; }
 
-        alloc_t alloc_;
-        T* buf_;
+        std::unique_ptr<slot[]> buf_;
         size_type capacity_;
+        size_type mark_bit_;
+        size_type one_lap_;
         /// index of the next free location to write to
         std::atomic<size_type> write_{0};
         /// 1 past the end of the valid range

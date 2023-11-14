@@ -54,7 +54,13 @@ TEST_SUITE("mpmc")
             CHECK(rb.try_emplace(5));
             CHECK(!rb.try_emplace(4));
             CHECK(rb.pop() == std::optional{3});
+            CHECK(rb.try_emplace(6));
+            CHECK(rb.size() == rb.max_size());
             CHECK(rb.pop() == std::optional{5});
+            CHECK(rb.try_emplace(7));
+            CHECK(rb.size() == rb.max_size());
+            CHECK(rb.pop() == std::optional{6});
+            CHECK(rb.pop() == std::optional{7});
             CHECK(rb.empty());
         }
         TEST_CASE("multi threaded unbuffered doesn't race")
