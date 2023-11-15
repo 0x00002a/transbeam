@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.5)
 project(transbeam)
 
 option(TRANSBEAM_BUILD_TESTS "Build tests" ON)
+option(TRANSBEAM_BUILD_EXAMPLES "Build examples" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 
@@ -21,4 +22,8 @@ target_include_directories(transbeam INTERFACE "${CMAKE_CURRENT_LIST_DIR}/includ
 
 if (${TRANSBEAM_BUILD_TESTS})
     add_subdirectory(tests)
+endif()
+
+if (${TRANSBEAM_BUILD_EXAMPLES})
+   add_subdirectory(examples)
 endif()

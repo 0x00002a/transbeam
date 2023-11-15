@@ -163,4 +163,14 @@ TEST_SUITE("mpmc")
             rx.subscribe();
         }
     }
+    TEST_SUITE("unbounded")
+    {
+        using namespace transbeam;
+        TEST_CASE("simple single thread case")
+        {
+            auto [tx, rx] = mpmc::unbounded<int>();
+            tx.send(5);
+            CHECK(rx.recv() == 5);
+        }
+    }
 }
