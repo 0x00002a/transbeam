@@ -69,9 +69,9 @@ namespace __detail {
         using value_type = T;
 
     private:
-        struct entry {
+        class entry {
+        public:
             ::transbeam::__detail::util::lazy_init<T> cell;
-            std::atomic<size_type> state;
 
             /// wait until the write flag is set in the state
             void ensure_write_flag()
@@ -81,11 +81,15 @@ namespace __detail {
                     if ((st & write_bit) == 0) {
                         state.wait(st, std::memory_order_acquire);
                     }
+                    else {
+                        break;
+                    }
                 }
             }
             void mark_written()
             {
                 state.fetch_or(write_bit, std::memory_order::release);
+                state.notify_all();
             }
             /// if the read bit is set then this slot has been read from in full
             auto read_bit_set() const -> bool
@@ -104,6 +108,9 @@ namespace __detail {
                 return (state.fetch_or(read_bit, std::memory_order_acq_rel) &
                         destroy_bit) != 0;
             }
+
+        private:
+            std::atomic<size_type> state;
         };
         struct block {
             /// next block in the linked list
