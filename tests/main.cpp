@@ -2,7 +2,6 @@
 #include <array>
 #include <chrono>
 #include <concepts>
-#include <format>
 #include <optional>
 #include <ostream>
 #include <stop_token>
@@ -29,7 +28,7 @@ template<typename T>
 auto& operator<<(std::ostream& o, std::optional<T> v)
 {
     if (v) {
-        return o << std::format("{}", *v);
+        return o << *v;
     }
     else {
         return o << "nullopt";
