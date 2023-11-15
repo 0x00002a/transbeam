@@ -343,6 +343,9 @@ namespace __detail {
                     }
                     return item;
                 }
+                else {
+                    rblock = read_.bptr.load(std::memory_order::acquire);
+                }
             }
         }
 
@@ -359,9 +362,9 @@ namespace __detail {
                         return;
                     }
                 }
-                // we're home clear, we can remove the whole block
-                delete b;
             }
+            // we're home clear, we can remove the whole block
+            delete b;
         }
         index_type write_;
         index_type read_;
