@@ -54,13 +54,57 @@ namespace __detail {
     /// maximum items in a chunk
     constexpr auto chunk_capacity = chunk_size - 1;
     constexpr auto meta_bits = 1;
-    constexpr auto write_bit = 0b1;
-    constexpr auto read_bit = 0b10;
-    constexpr auto destroy_bit = 0b100;
     /// meta bit for index
     /// - on read it means its not the last block
     /// - on write it doesn't mean anything right now
     constexpr auto meta_bit = 1;
+
+    class block_state {
+    public:
+        /// wait until the write flag is set in the state
+        void ensure_write_flag()
+        {
+            while (true) {
+                const auto st = state.load(std::memory_order::acquire);
+                if ((st & write_bit) == 0) {
+                    state.wait(st, std::memory_order_acquire);
+                }
+                else {
+                    break;
+                }
+            }
+        }
+        void mark_written()
+        {
+            state.fetch_or(write_bit, std::memory_order::release);
+            state.notify_all();
+        }
+        /// if the read bit is set then this slot has been read from in full
+        auto read_bit_set() const -> bool
+        {
+            return (state.load(std::memory_order::acquire) & read_bit) != 0;
+        }
+        /// set the destroy bit and check the read bit. this synchronises with `mark_read_and_check_destroy`
+        auto mark_destroy_and_check_read() -> bool
+        {
+            return (state.fetch_or(destroy_bit, std::memory_order_acq_rel) &
+                    read_bit) != 0;
+        }
+        /// set the read bit and check the destroy bit. this synchronises with `mark_destroy_and_check_read`
+        auto mark_read_and_check_destroy() -> bool
+        {
+            return (state.fetch_or(read_bit, std::memory_order_acq_rel) &
+                    destroy_bit) != 0;
+        }
+
+    private:
+        std::atomic_uint8_t state;
+
+        constexpr static auto write_bit = 0b1;
+        constexpr static auto read_bit = 0b10;
+        constexpr static auto destroy_bit = 0b100;
+    };
+
     /// this one is based on the crossbeam `list` flavour
     template<typename T>
     class linked_list {
@@ -69,48 +113,9 @@ namespace __detail {
         using value_type = T;
 
     private:
-        class entry {
-        public:
+        struct entry {
             ::transbeam::__detail::util::lazy_init<T> cell;
-
-            /// wait until the write flag is set in the state
-            void ensure_write_flag()
-            {
-                while (true) {
-                    const auto st = state.load(std::memory_order::acquire);
-                    if ((st & write_bit) == 0) {
-                        state.wait(st, std::memory_order_acquire);
-                    }
-                    else {
-                        break;
-                    }
-                }
-            }
-            void mark_written()
-            {
-                state.fetch_or(write_bit, std::memory_order::release);
-                state.notify_all();
-            }
-            /// if the read bit is set then this slot has been read from in full
-            auto read_bit_set() const -> bool
-            {
-                return (state.load(std::memory_order::acquire) & read_bit) != 0;
-            }
-            /// set the destroy bit and check the read bit. this synchronises with `mark_read_and_check_destroy`
-            auto mark_destroy_and_check_read() -> bool
-            {
-                return (state.fetch_or(destroy_bit, std::memory_order_acq_rel) &
-                        read_bit) != 0;
-            }
-            /// set the read bit and check the destroy bit. this synchronises with `mark_destroy_and_check_read`
-            auto mark_read_and_check_destroy() -> bool
-            {
-                return (state.fetch_or(read_bit, std::memory_order_acq_rel) &
-                        destroy_bit) != 0;
-            }
-
-        private:
-            std::atomic<size_type> state;
+            block_state state;
         };
         struct block {
             /// next block in the linked list
@@ -223,7 +228,7 @@ namespace __detail {
                         entry& ent = target->entries[offset];
                         ent.cell.write(std::forward<Args>(args)...);
                         // mark the fact we've written to this entry
-                        ent.mark_written();
+                        ent.state.mark_written();
                         return true;
                     }
                 }
@@ -325,14 +330,14 @@ namespace __detail {
                     // now we can actually read it out
                     entry& e = rblock->entries[chunk_idx];
                     // we need to make sure the write on this entry has fully finished so we don't race with it
-                    e.ensure_write_flag();
+                    e.state.ensure_write_flag();
                     auto item = T{static_cast<T&&>(*e.cell.read())};
 
                     if (chunk_idx + 1 == chunk_capacity) {
-                        // we are the last in this block, lets trying destroying everything
+                        // we are the last in this block, lets try destroying everything
                         destroy_block(rblock, 0);
                     }
-                    else if (e.mark_read_and_check_destroy()) {
+                    else if (e.state.mark_read_and_check_destroy()) {
                         // we've been marked for destruction, carry on the work of destroying the block
                         destroy_block(rblock, chunk_idx + 1);
                     }
@@ -346,9 +351,9 @@ namespace __detail {
         {
             for (size_type n = 0; n != chunk_capacity - 1; ++n) {
                 entry& e = b->entries[n];
-                if (!e.read_bit_set()) {
+                if (!e.state.read_bit_set()) {
                     // a thread is still using this, set the destroy bit
-                    if (!e.mark_destroy_and_check_read()) {
+                    if (!e.state.mark_destroy_and_check_read()) {
                         // the thread is _still_ using it so it will see the destroy bit and
                         // continue destroying this block for us
                         return;

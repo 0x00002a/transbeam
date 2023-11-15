@@ -6,6 +6,7 @@
 #include <ostream>
 #include <stop_token>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
@@ -171,6 +172,65 @@ TEST_SUITE("mpmc")
             auto [tx, rx] = mpmc::unbounded<int>();
             tx.send(5);
             CHECK(rx.recv() == 5);
+        }
+        TEST_CASE("destructors are called")
+        {
+            struct thing {
+                bool* destroyed;
+                thing(bool* destroyed) : destroyed{destroyed}
+                {
+                    REQUIRE(destroyed != nullptr);
+                    CHECK(!*destroyed);
+                }
+                ~thing() { *destroyed = true; }
+            };
+            bool d1{false};
+            bool d2{false};
+            {
+                auto [tx, rx] = mpmc::unbounded<thing>();
+                tx.send(&d1);
+                tx.send(&d2);
+                CHECK(!d1);
+                CHECK(!d2);
+            }
+            CHECK(d1);
+            CHECK(d2);
+        }
+        TEST_CASE("try recv doesn't block if empty")
+        {
+            auto [tx, rx] = mpmc::unbounded<int>();
+            CHECK(rx.try_recv() == std::nullopt);
+            tx.send(5);
+            rx.recv();
+            CHECK(rx.try_recv() == std::nullopt);
+        }
+        TEST_CASE("all messages sent can be read")
+        {
+            constexpr auto nb_threads = 3;
+            constexpr auto to_send = nb_threads * 100;
+            auto [tx, rx] = mpmc::unbounded<int>();
+            std::vector<std::jthread> threads;
+            for (std::size_t t = 0; t != nb_threads; ++t) {
+                threads.emplace_back([t, tx]() mutable {
+                    const auto start = t * to_send;
+                    const auto end = (t + 1) * to_send;
+
+                    for (std::size_t n = start; n != end; ++n) {
+                        tx.send(n);
+                    }
+                });
+            }
+            std::vector<int> got;
+            got.reserve(to_send);
+            for (std::size_t n = 0; n != to_send; ++n) {
+                const auto m = rx.recv();
+                CHECK(std::find(got.begin(), got.end(), m) == got.end());
+                got.emplace_back(m);
+            }
+
+            for (std::size_t n = 0; n != to_send; ++n) {
+                CHECK(std::find(got.begin(), got.end(), n) != got.end());
+            }
         }
     }
 }
