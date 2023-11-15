@@ -1,5 +1,6 @@
 
 add_executable(tests main.cpp)
+setup_exe(tests)
 
 find_package(doctest REQUIRED)
 

@@ -47,7 +47,7 @@ auto unbounded() -> std::pair<sender<T>, receiver<T>>;
 namespace __detail {
 
     template<typename B>
-    class shared_data;
+    struct shared_data;
 
     /// block in the list hold a chunk of items
     constexpr auto chunk_size = 32;
@@ -142,7 +142,7 @@ namespace __detail {
         };
 
         template<typename E>
-        friend class shared_data;
+        friend struct shared_data;
 
         linked_list() = default;
 
@@ -359,7 +359,7 @@ namespace __detail {
     private:
         void destroy_block(block* b, size_type start)
         {
-            for (size_type n = 0; n != chunk_capacity - 1; ++n) {
+            for (size_type n = start; n != chunk_capacity - 1; ++n) {
                 entry& e = b->entries[n];
                 if (!e.state.read_bit_set()) {
                     // a thread is still using this, set the destroy bit
@@ -418,11 +418,10 @@ namespace __detail {
         {
             // it is _not_ safe for multiple threads to still have a handle on us at this point
             // so don't bother handling that case
-            const auto wd = write_.load();
             const auto rd = read_.load();
             const auto len = size();
             for (size_type n = 0; n != len; ++n) {
-                const auto idx = [this, n, rd, wd] {
+                const auto idx = [this, n, rd] {
                     if (rd + n < capacity_) {
                         return rd + n;
                     }

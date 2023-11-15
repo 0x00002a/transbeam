@@ -18,7 +18,7 @@
 auto on_threads(std::size_t n, auto f)
 {
     std::vector<std::jthread> threads;
-    for (auto c = 0; c != n; ++c) {
+    for (std::size_t c = 0; c != n; ++c) {
         threads.emplace_back([&f] { f(); });
     }
     return threads;
@@ -205,12 +205,11 @@ TEST_SUITE("mpmc")
 
         TEST_CASE("multithreaded wakes up waiting write thread")
         {
-            int read{0};
 
             auto [tx, rx] = mpmc::bounded<int>(1);
             tx.send(1);
             {
-                std::jthread wd{[&read, tx]() mutable { tx.send(2); }};
+                std::jthread wd{[tx]() mutable { tx.send(2); }};
                 CHECK(rx.recv() == 1);
             }
             CHECK(rx.recv() == 2);

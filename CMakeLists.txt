@@ -6,12 +6,30 @@ option(TRANSBEAM_BUILD_EXAMPLES "Build examples" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 
-# enable colour output with ninja
-if (${CMAKE_CXX_COMPILER_ID} STREQUAL GNU)
-   add_compile_options(-fdiagnostics-color=always)
-elseif (${CMAKE_CXX_COMPILER_ID} STREQUAL Clang)
-   add_compile_options(-fcolor-diagnostics)
-endif ()
+function(setup_exe NAME)
+   # enable colour output with ninja
+   if (${CMAKE_CXX_COMPILER_ID} STREQUAL GNU)
+      target_compile_options(${NAME} PRIVATE -fdiagnostics-color=always)
+   elseif (${CMAKE_CXX_COMPILER_ID} STREQUAL Clang)
+      target_compile_options(${NAME} PRIVATE -fcolor-diagnostics)
+   endif ()
+   if (${CMAKE_CXX_COMPILER_ID} MATCHES "(GNU|Clang|AppleClang)")
+      target_compile_options(${NAME} PRIVATE
+        -Wall
+        -Werror
+        -Wextra
+        -Wpedantic
+        -Wconversion
+        -Warith-conversion
+
+        -Wno-error=unused-but-set-variable
+        -Wno-error=unused-variable
+        -Wno-error=unused-parameter
+        -Wno-error=unused-function
+      )
+   endif()
+
+endfunction()
 
 
 file(GLOB_RECURSE SRC "${CMAKE_CURRENT_LIST_DIR}/include/*.hpp")
