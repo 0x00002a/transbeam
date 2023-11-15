@@ -546,15 +546,6 @@ namespace __detail {
         }
 
     private:
-        auto advance_ptr(size_type exp, std::atomic<size_type>& p)
-        {
-            while (!p.compare_exchange_weak(exp, (exp + 1) % capacity_)) {
-                exp = p.load();
-            }
-            return exp;
-        }
-        constexpr auto wrap_pt() { return capacity_; }
-
         std::unique_ptr<slot[]> buf_;
         size_type capacity_;
         size_type mark_bit_;
