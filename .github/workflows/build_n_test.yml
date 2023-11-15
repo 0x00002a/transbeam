@@ -1,0 +1,85 @@
+name: Build & Test
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+
+env:
+  BUILD_TYPE: Debug
+  INSTALL_LOCATION: .local
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain:
+          [
+            {
+              name: "Ubuntu GCC",
+              cxx: "g++-11",
+              cc: "gcc-11",
+              packages: "doctest-dev",
+              os: ubuntu-latest,
+            },
+            {
+              name: "Ubuntu Clang",
+              cxx: "clang++",
+              cc: "clang",
+              packages: "doctest-dev",
+              os: ubuntu-latest,
+            },
+            {
+              name: "VS2019",
+              cxx: "cl.exe",
+              cc: "cl.exe",
+              packages: "doctest",
+              os: windows-latest,
+            },
+            {
+              name: "MacOS",
+              cxx: "clang++",
+              cc: "clang",
+              packages: "doctest",
+              os: macos-latest,
+            },
+          ]
+
+    continue-on-error: false
+    runs-on: ${{ matrix.toolchain.os }}
+    env:
+      CC: ${{ matrix.toolchain.cc }}
+      CXX: ${{ matrix.toolchain.cxx }}
+
+    name: "${{ matrix.toolchain.name }}"
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Install Ninja
+        uses: seanmiddleditch/gha-setup-ninja@master
+
+      - name: Install packages (via apt)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install ${{ matrix.toolchain.packages }} -y
+
+      - name: Install packages (via homebrew)
+        if: runner.os == 'macOS'
+        run: brew install ${{ matrix.toolchain.packages }}
+
+      - name: Install packages (via choco)
+        if: runner.os == 'Windows'
+        run: choco upgrade ${{ matrix.toolchain.packages }}
+
+      - name: Install msvc
+        if: ${{ matrix.toolchain.cxx == 'cl.exe' }} # This is a bit of a hack
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure
+        run: cmake -Bbuild -GNinja -DTRANSBEAM_BUILD_EXAMPLES=ON -DTRANSBEAM_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Run tests
+        run: ./build/tests/tests
