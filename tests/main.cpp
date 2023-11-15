@@ -37,6 +37,57 @@ auto& operator<<(std::ostream& o, std::optional<T> v)
 
 } // namespace std
 
+struct ctor_tester {
+    int* dtor_calls;
+    int* move_calls;
+    int* copy_calls;
+
+    ctor_tester(int* dtor, int* mov, int* cpy)
+        : dtor_calls{dtor}, move_calls{mov}, copy_calls{cpy}
+    {
+    }
+    ~ctor_tester()
+    {
+        if (dtor_calls != nullptr) {
+            (*dtor_calls)++;
+        }
+    }
+    ctor_tester(const ctor_tester& o)
+        : ctor_tester{o.dtor_calls, o.move_calls, o.copy_calls}
+    {
+        if (copy_calls) {
+            (*copy_calls)++;
+        }
+    }
+
+    ctor_tester(ctor_tester&& o)
+        : ctor_tester{o.dtor_calls, o.move_calls, o.copy_calls}
+    {
+        if (move_calls) {
+            (*move_calls)++;
+        }
+    }
+};
+void dtors_called_inplace_test(auto tx, auto rx)
+{
+    int dtor_calls{0};
+    int mov{0};
+    int cpy{0};
+    tx.send(&dtor_calls, &mov, &cpy);
+    CHECK(dtor_calls == 0);
+    CHECK(mov == 0);
+    CHECK(cpy == 0);
+    int prev_dtors;
+    {
+        auto m = rx.recv();
+        CHECK(dtor_calls == mov);
+        prev_dtors = dtor_calls;
+        CHECK(cpy == 0);
+    }
+    CHECK(dtor_calls == prev_dtors + 1);
+    CHECK(cpy == 0);
+}
+
 TEST_SUITE("mpmc")
 {
     TEST_SUITE("bounded_ringbuf")
@@ -163,6 +214,12 @@ TEST_SUITE("mpmc")
             tx.subscribe();
             rx.subscribe();
         }
+
+        TEST_CASE("dtors in place")
+        {
+            auto [tx, rx] = mpmc::bounded<ctor_tester>(1);
+            dtors_called_inplace_test(tx, rx);
+        }
     }
     TEST_SUITE("unbounded")
     {
@@ -236,6 +293,11 @@ TEST_SUITE("mpmc")
             for (std::size_t n = 0; n != to_send; ++n) {
                 CHECK(std::find(got.begin(), got.end(), n) != got.end());
             }
+        }
+        TEST_CASE("dtors in place")
+        {
+            auto [tx, rx] = mpmc::unbounded<ctor_tester>();
+            dtors_called_inplace_test(tx, rx);
         }
     }
 }

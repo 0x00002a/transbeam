@@ -338,6 +338,7 @@ namespace __detail {
                     // we need to make sure the write on this entry has fully finished so we don't race with it
                     e.state.ensure_write_flag();
                     auto item = T{static_cast<T&&>(*e.cell.read())};
+                    std::destroy_at(e.cell.read());
 
                     if (chunk_idx + 1 == chunk_capacity) {
                         // we are the last in this block, lets try destroying everything
