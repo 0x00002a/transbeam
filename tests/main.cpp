@@ -1,6 +1,7 @@
 
 #include <array>
 #include <chrono>
+#include <concepts>
 #include <format>
 #include <optional>
 #include <ostream>
@@ -87,6 +88,13 @@ void dtors_called_inplace_test(auto tx, auto rx)
     CHECK(dtor_calls == prev_dtors + 1);
     CHECK(cpy == 0);
 }
+
+struct immovable {
+    immovable(immovable&&) = delete;
+    immovable(const immovable&) = default;
+    immovable() = default;
+};
+static_assert(!std::move_constructible<immovable>);
 
 TEST_SUITE("mpmc")
 {

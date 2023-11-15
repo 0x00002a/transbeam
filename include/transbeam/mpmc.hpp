@@ -681,6 +681,8 @@ template<typename T>
 auto bounded(std::size_t capacity)
     -> std::pair<sync_sender<T>, sync_receiver<T>>
 {
+    static_assert(std::move_constructible<T>,
+                  "channels require move constructible types");
     auto shared =
         std::make_shared<__detail::shared_data<__detail::bounded_ringbuf<T>>>(
             capacity);
@@ -691,6 +693,8 @@ auto bounded(std::size_t capacity)
 template<typename T>
 auto unbounded() -> std::pair<sender<T>, receiver<T>>
 {
+    static_assert(std::move_constructible<T>,
+                  "channels require move constructible types");
     auto shared =
         std::make_shared<__detail::shared_data<__detail::linked_list<T>>>();
     return std::pair{sender<T>{shared}, receiver<T>{std::move(shared)}};
