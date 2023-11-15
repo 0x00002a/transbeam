@@ -149,6 +149,11 @@ namespace __detail {
         {
             while (pop().has_value()) {
             }
+            const auto b = read_.bptr.load();
+            if (b != nullptr) {
+                // we still have the last block left
+                delete b;
+            }
         }
 
         template<typename... Args>
