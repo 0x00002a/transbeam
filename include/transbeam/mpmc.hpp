@@ -15,6 +15,36 @@
 
 namespace transbeam::mpmc {
 namespace __detail {
+    template<typename T, typename Backend>
+    class sender;
+
+    template<typename T, typename Backend>
+    class receiver;
+    template<typename T>
+    class bounded_ringbuf;
+
+    template<typename T>
+    class linked_list;
+} // namespace __detail
+template<typename T>
+using sync_sender = __detail::sender<T, __detail::bounded_ringbuf<T>>;
+
+template<typename T>
+using sync_receiver = __detail::receiver<T, __detail::bounded_ringbuf<T>>;
+
+template<typename T>
+using sender = __detail::sender<T, __detail::linked_list<T>>;
+
+template<typename T>
+using receiver = __detail::receiver<T, __detail::linked_list<T>>;
+template<typename T>
+auto bounded(std::size_t capacity)
+    -> std::pair<sync_sender<T>, sync_receiver<T>>;
+
+template<typename T>
+auto unbounded() -> std::pair<sender<T>, receiver<T>>;
+
+namespace __detail {
 
     template<typename B>
     class shared_data;
@@ -519,9 +549,6 @@ namespace __detail {
     };
 
     template<typename T, typename Backend>
-    class sender;
-
-    template<typename T, typename Backend>
     class receiver {
     public:
         auto try_recv() -> std::optional<T>
@@ -555,14 +582,16 @@ namespace __detail {
             : shared_{std::move(shared)}
         {
         }
-        template<typename E>
-        friend auto bounded(std::size_t capacity)
-            -> std::pair<sender<E, bounded_ringbuf<E>>,
-                         receiver<E, bounded_ringbuf<E>>>;
-        template<typename E>
-        friend auto unbounded() -> std::pair<sender<E, linked_list<E>>,
-                                             receiver<E, linked_list<E>>>;
 
+        template<typename E>
+        friend auto ::transbeam::mpmc::bounded(std::size_t capacity)
+            -> std::pair<::transbeam::mpmc::sync_sender<E>,
+                         ::transbeam::mpmc::sync_receiver<E>>;
+
+        template<typename E>
+        friend auto ::transbeam::mpmc::unbounded()
+            -> std::pair<::transbeam::mpmc::sender<E>,
+                         ::transbeam::mpmc::receiver<E>>;
         friend class sender<T, Backend>;
 
         std::shared_ptr<__detail::shared_data<Backend>> shared_;
@@ -603,25 +632,20 @@ namespace __detail {
         {
         }
         template<typename E>
-        friend auto bounded(std::size_t capacity)
-            -> std::pair<sender<E, bounded_ringbuf<E>>,
-                         receiver<E, bounded_ringbuf<E>>>;
+        friend auto ::transbeam::mpmc::bounded(std::size_t capacity)
+            -> std::pair<::transbeam::mpmc::sync_sender<E>,
+                         ::transbeam::mpmc::sync_receiver<E>>;
 
         template<typename E>
-        friend auto unbounded() -> std::pair<sender<E, linked_list<E>>,
-                                             receiver<E, linked_list<E>>>;
+        friend auto ::transbeam::mpmc::unbounded()
+            -> std::pair<::transbeam::mpmc::sender<E>,
+                         ::transbeam::mpmc::receiver<E>>;
         friend class receiver<T, Backend>;
 
         std::shared_ptr<__detail::shared_data<Backend>> shared_;
     };
 
 } // namespace __detail
-
-template<typename T>
-using sync_sender = __detail::sender<T, __detail::bounded_ringbuf<T>>;
-
-template<typename T>
-using sync_receiver = __detail::receiver<T, __detail::bounded_ringbuf<T>>;
 
 template<typename T>
 auto bounded(std::size_t capacity)
@@ -633,12 +657,6 @@ auto bounded(std::size_t capacity)
     return std::pair{sync_sender<T>{shared},
                      sync_receiver<T>{std::move(shared)}};
 }
-
-template<typename T>
-using sender = __detail::sender<T, __detail::linked_list<T>>;
-
-template<typename T>
-using receiver = __detail::receiver<T, __detail::linked_list<T>>;
 
 template<typename T>
 auto unbounded() -> std::pair<sender<T>, receiver<T>>
