@@ -20,12 +20,17 @@ function(setup_exe NAME)
         -Wextra
         -Wpedantic
         -Wconversion
-        -Warith-conversion
 
         -Wno-error=unused-but-set-variable
         -Wno-error=unused-variable
         -Wno-error=unused-parameter
         -Wno-error=unused-function
+
+      )
+   endif()
+   if (${CMAKE_CXX_COMPILER_ID} STREQUAL GNU)
+      target_compile_options(${NAME} PRIVATE
+        -Warith-conversion
       )
    endif()
 
