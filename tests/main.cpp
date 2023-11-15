@@ -209,17 +209,22 @@ TEST_SUITE("mpmc")
             constexpr auto nb_threads = 3;
             constexpr auto to_send = nb_threads * 100;
             auto [tx, rx] = mpmc::unbounded<int>();
-            std::vector<std::jthread> threads;
-            for (std::size_t t = 0; t != nb_threads; ++t) {
-                threads.emplace_back([t, tx]() mutable {
-                    const auto start = t * to_send;
-                    const auto end = (t + 1) * to_send;
+            {
+                std::vector<std::jthread> threads;
+                for (std::size_t t = 0; t != nb_threads; ++t) {
+                    threads.emplace_back([t, tx]() mutable {
+                        const auto scale = to_send / nb_threads;
+                        const auto start = t * scale;
+                        const auto end = (t + 1) * scale;
 
-                    for (std::size_t n = start; n != end; ++n) {
-                        tx.send(n);
-                    }
-                });
+                        for (std::size_t n = start; n != end; ++n) {
+                            tx.send(n);
+                        }
+                    });
+                }
             }
+            REQUIRE(tx.size() == rx.size());
+            REQUIRE(tx.size() == to_send);
             std::vector<int> got;
             got.reserve(to_send);
             for (std::size_t n = 0; n != to_send; ++n) {

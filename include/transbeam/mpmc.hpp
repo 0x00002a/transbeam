@@ -98,7 +98,7 @@ namespace __detail {
         }
 
     private:
-        std::atomic_uint8_t state;
+        std::atomic_uint8_t state{0};
 
         constexpr static auto write_bit = 0b1;
         constexpr static auto read_bit = 0b10;
@@ -137,7 +137,7 @@ namespace __detail {
             }
         };
         struct index_type {
-            std::atomic<size_type> idx;
+            std::atomic<size_type> idx{0};
             std::atomic<block*> bptr{nullptr};
         };
 
@@ -231,6 +231,9 @@ namespace __detail {
                         ent.state.mark_written();
                         return true;
                     }
+                    else {
+                        target = write_.bptr.load(std::memory_order::acquire);
+                    }
                 }
             }
         }
@@ -252,6 +255,9 @@ namespace __detail {
                             chunk_capacity) {
                             return c + (1 << meta_bits);
                         }
+                        else {
+                            return c;
+                        }
                     };
                     rd = fixup(rd);
                     wd = fixup(wd);
@@ -272,7 +278,7 @@ namespace __detail {
             auto rd = read_.idx.load(std::memory_order::acquire);
             auto rblock = read_.bptr.load(std::memory_order::acquire);
             while (true) {
-                const auto chunk_idx = (rd >> meta_bits) % chunk_capacity;
+                const auto chunk_idx = (rd >> meta_bits) % chunk_size;
                 if (chunk_idx == chunk_capacity) {
                     // we're at the end of this chunk
                     rd = read_.idx.load(std::memory_order::acquire);
@@ -591,6 +597,7 @@ namespace __detail {
                 }
             }
         }
+        auto size() const -> std::size_t { return shared_->buf.size(); }
 
         auto subscribe() const -> sender<T, Backend>
         {
@@ -645,6 +652,8 @@ namespace __detail {
         {
             return receiver<T, Backend>{shared_};
         }
+
+        auto size() const -> std::size_t { return shared_->buf.size(); }
 
     private:
         sender(std::shared_ptr<__detail::shared_data<Backend>> shared)
