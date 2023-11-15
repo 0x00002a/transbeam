@@ -1,0 +1,8 @@
+
+
+find_package(benchmark REQUIRED)
+
+add_executable(bench main.cpp)
+setup_exe(bench)
+
+target_link_libraries(bench PRIVATE benchmark::benchmark transbeam)

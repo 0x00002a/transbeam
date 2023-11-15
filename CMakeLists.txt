@@ -3,6 +3,7 @@ project(transbeam)
 
 option(TRANSBEAM_BUILD_TESTS "Build tests" ON)
 option(TRANSBEAM_BUILD_EXAMPLES "Build examples" OFF)
+option(TRANSBEAM_BUILD_BENCHMARKS "Build benchmarks" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 
@@ -49,4 +50,8 @@ endif()
 
 if (${TRANSBEAM_BUILD_EXAMPLES})
    add_subdirectory(examples)
+endif()
+
+if (${TRANSBEAM_BUILD_BENCH})
+   add_subdirectory(bench)
 endif()
