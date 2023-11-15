@@ -1,5 +1,6 @@
 #pragma once
 
+#include "transbeam/__detail/backoff.hpp"
 #include <atomic>
 #include <bit>
 #include <cassert>
@@ -165,6 +166,7 @@ namespace __detail {
             requires(std::constructible_from<T, Args...>)
         auto try_emplace(Args&&... args) -> bool
         {
+            ::transbeam::__detail::backoff spinner;
             auto wd = write_.idx.load(std::memory_order::acquire);
             auto target = write_.bptr.load(std::memory_order::acquire);
             // this may or may not be used
@@ -174,6 +176,7 @@ namespace __detail {
                 const auto offset = (wd >> meta_bits) % chunk_size;
                 if (offset ==
                     chunk_capacity) { // we've maxed out this block, wait for the next one to be set up for us
+                    spinner.thread_yield();
                     wd = write_.idx.load(std::memory_order::acquire);
                     target = write_.bptr.load(std::memory_order::acquire);
                 }
@@ -233,6 +236,7 @@ namespace __detail {
                     }
                     else {
                         target = write_.bptr.load(std::memory_order::acquire);
+                        spinner.cpu_yield();
                     }
                 }
             }
@@ -275,11 +279,13 @@ namespace __detail {
         }
         auto pop() -> std::optional<T>
         {
+            ::transbeam::__detail::backoff spinner;
             auto rd = read_.idx.load(std::memory_order::acquire);
             auto rblock = read_.bptr.load(std::memory_order::acquire);
             while (true) {
                 const auto chunk_idx = (rd >> meta_bits) % chunk_size;
                 if (chunk_idx == chunk_capacity) {
+                    spinner.thread_yield();
                     // we're at the end of this chunk
                     rd = read_.idx.load(std::memory_order::acquire);
                     rblock = read_.bptr.load(std::memory_order::acquire);
@@ -311,6 +317,7 @@ namespace __detail {
                 if (rblock == nullptr) {
                     // the only way this is null but write is ahead (as checked earlier) is if the next block
                     // is currently being created, so just wait for it
+                    spinner.thread_yield();
 
                     rd = read_.idx.load(std::memory_order::acquire);
                     rblock = read_.bptr.load(std::memory_order::acquire);
@@ -352,6 +359,7 @@ namespace __detail {
                 }
                 else {
                     rblock = read_.bptr.load(std::memory_order::acquire);
+                    spinner.cpu_yield();
                 }
             }
         }
@@ -455,6 +463,7 @@ namespace __detail {
             requires(std::constructible_from<T, Args...>)
         auto try_emplace(Args&&... args) -> bool
         {
+            ::transbeam::__detail::backoff spinner;
             auto wd = write_.load(std::memory_order_relaxed);
 
             while (true) {
@@ -481,6 +490,9 @@ namespace __detail {
                         s.stamp.store(wd + 1, std::memory_order_release);
                         return true;
                     }
+                    else {
+                        spinner.cpu_yield();
+                    }
                 }
                 else if (stamp + one_lap_ == wd + 1) {
                     // we've come back on ourselves, can't overwrite this
@@ -490,9 +502,12 @@ namespace __detail {
                         // if head is behind by a lap its full
                         return false;
                     }
+                    spinner.cpu_yield();
                     wd = write_.load(std::memory_order_relaxed);
                 }
                 else {
+                    // gotta wait for the stamp so yield the thread
+                    spinner.thread_yield();
                     wd = write_.load(std::memory_order_relaxed);
                 }
             }
@@ -500,6 +515,7 @@ namespace __detail {
         }
         auto pop() -> std::optional<T>
         {
+            ::transbeam::__detail::backoff spinner;
             auto rd = read_.load(std::memory_order_relaxed);
 
             while (true) {
@@ -528,6 +544,9 @@ namespace __detail {
                         s.stamp.store(rd + one_lap_, std::memory_order_release);
                         return ent;
                     }
+                    else {
+                        spinner.cpu_yield();
+                    }
                 }
                 else if (rd == stamp) {
                     std::atomic_thread_fence(std::memory_order_seq_cst);
@@ -536,9 +555,11 @@ namespace __detail {
                         // if on same lap and index then we are full
                         return std::nullopt;
                     }
+                    spinner.cpu_yield();
                     rd = read_.load(std::memory_order_relaxed);
                 }
                 else {
+                    spinner.thread_yield();
                     rd = read_.load(std::memory_order_relaxed);
                 }
             }
