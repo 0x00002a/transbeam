@@ -153,12 +153,29 @@ namespace __detail {
 
         ~linked_list()
         {
-            while (pop().has_value()) {
+            auto rd = read_.idx.load(std::memory_order::relaxed) &
+                      ~((1 << meta_bits) - 1);
+            auto wd = write_.idx.load(std::memory_order::relaxed) &
+                      ~((1 << meta_bits) - 1);
+            auto rb = read_.bptr.load(std::memory_order::relaxed);
+
+            while (wd != rd) {
+                const auto chunk_idx = (rd >> meta_bits) % chunk_size;
+
+                if (chunk_idx < chunk_capacity) {
+                    std::destroy_at(rb->entries[chunk_idx].cell.read());
+                }
+                else {
+                    auto next_rb = rb->next.load(std::memory_order::relaxed);
+                    delete rb;
+                    rb = next_rb;
+                }
+                rd += (1 << meta_bits);
             }
-            const auto b = read_.bptr.load();
-            if (b != nullptr) {
+
+            if (rb != nullptr) {
                 // we still have the last block left
-                delete b;
+                delete rb;
             }
         }
 
