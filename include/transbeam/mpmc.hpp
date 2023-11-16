@@ -384,6 +384,18 @@ namespace __detail {
         index_type write_;
         index_type read_;
     };
+    constexpr auto slot_written_bit = 1 << 0;
+    constexpr auto slot_lap_bit = 1 << 1;
+
+    constexpr auto take_top_two_bits(std::size_t s) -> uint8_t
+    {
+        return static_cast<uint8_t>(s >> (8 * sizeof(std::size_t) - 2));
+    }
+
+    constexpr std::size_t mark_bit_{static_cast<std::size_t>(1)
+                                    << (8 * sizeof(std::size_t) - 2)};
+    constexpr std::size_t one_lap_{mark_bit_ << 1};
+    constexpr std::size_t signet_lap_shift = (8 * sizeof(std::size_t) - 2);
 
     template<typename T>
     class bounded_ringbuf {
@@ -399,24 +411,18 @@ namespace __detail {
             std::numeric_limits<size_type>::max();
 
         struct slot {
-            std::atomic<size_type> stamp;
+            std::atomic_uint8_t stamp;
             ::transbeam::__detail::util::lazy_init<T> entry;
         };
 
     public:
         constexpr explicit bounded_ringbuf(size_type capacity)
-            : buf_(new slot[capacity]),
-              capacity_{capacity},
-              mark_bit_{std::bit_ceil(capacity + 1)},
-              one_lap_{mark_bit_ * 2}
+            : buf_(new slot[capacity]), capacity_{capacity}
         {
             if (capacity == std::numeric_limits<size_type>::max() ||
                 capacity == 0) {
                 throw std::logic_error{
                     "invalid capacity, too big or too small"};
-            }
-            for (size_type n = 0; n != capacity_; ++n) {
-                buf_[n].stamp = n;
             }
         }
         bounded_ringbuf(bounded_ringbuf&&) = delete;
@@ -427,16 +433,10 @@ namespace __detail {
             // it is _not_ safe for multiple threads to still have a handle on us at this point
             // so don't bother handling that case
             const auto rd = read_.load();
+            const auto ridx = rd & (mark_bit_ - 1);
             const auto len = size();
             for (size_type n = 0; n != len; ++n) {
-                const auto idx = [this, n, rd] {
-                    if (rd + n < capacity_) {
-                        return rd + n;
-                    }
-                    else {
-                        return capacity_ - rd + n;
-                    }
-                }();
+                const auto idx = (ridx + n) % capacity_;
                 std::destroy_at(buf_[idx].entry.read());
             }
         }
@@ -449,10 +449,10 @@ namespace __detail {
                 if (write_.load() == wd) {
                     const auto widx = wd & (mark_bit_ - 1);
                     const auto ridx = rd & (mark_bit_ - 1);
-                    return widx > ridx               ? widx - ridx
-                           : ridx > widx             ? capacity_ - widx + ridx
-                           : (wd & ~mark_bit_) == rd ? 0
-                                                     : capacity_;
+                    return widx > ridx   ? widx - ridx
+                           : ridx > widx ? capacity_ - widx + ridx
+                           : (wd & ~mark_bit_) == (rd & ~mark_bit_) ? 0
+                                                                    : capacity_;
                 }
             }
         }
@@ -468,11 +468,12 @@ namespace __detail {
 
             while (true) {
                 const auto idx = wd & (mark_bit_ - 1);
-                const auto lap = wd & ~(one_lap_ - 1);
+                const auto lap = wd & one_lap_;
                 slot& s = buf_[idx];
                 const auto stamp = s.stamp.load(std::memory_order_acquire);
 
-                if (wd == stamp) {
+                if (((stamp & slot_written_bit) == 0) &&
+                    (stamp & slot_lap_bit) == (lap >> signet_lap_shift)) {
                     const auto next_wd = [this, idx, lap, wd] {
                         if (idx + 1 >= capacity_) {
                             // wrap around and increase lap
@@ -487,18 +488,22 @@ namespace __detail {
                             std::memory_order_relaxed)) {
                         // now we can actually do the update
                         s.entry.write(std::forward<Args>(args)...);
-                        s.stamp.store(wd + 1, std::memory_order_release);
+                        s.stamp.store(take_top_two_bits(next_wd) |
+                                          slot_written_bit,
+                                      std::memory_order_release);
                         return true;
                     }
                     else {
                         spinner.cpu_yield();
                     }
                 }
-                else if (stamp + one_lap_ == wd + 1) {
+                else if ((stamp & slot_written_bit) ==
+                         (take_top_two_bits(wd - one_lap_) |
+                          slot_written_bit)) {
                     // we've come back on ourselves, can't overwrite this
                     std::atomic_thread_fence(std::memory_order_seq_cst);
                     const auto rd = read_.load(std::memory_order_relaxed);
-                    if (rd + one_lap_ == wd) {
+                    if (((rd + one_lap_) & ~mark_bit_) == wd) {
                         // if head is behind by a lap its full
                         return false;
                     }
@@ -526,7 +531,7 @@ namespace __detail {
                 const auto stamp = s.stamp.load(std::memory_order_acquire);
 
                 // if the write stamp is ahead by 1 we are allowed to read this
-                if (rd + 1 == stamp) {
+                if ((stamp & slot_written_bit) != 0) {
                     const auto next_rd = [this, rd, lap, idx] {
                         if (idx + 1 >= capacity_) {
                             return lap + one_lap_;
@@ -541,17 +546,18 @@ namespace __detail {
                         // now we can actually read
                         auto ent = T{static_cast<T&&>(*s.entry.read())};
                         std::destroy_at(s.entry.read());
-                        s.stamp.store(rd + one_lap_, std::memory_order_release);
+                        s.stamp.store(lap > 0 ? 0 : slot_lap_bit,
+                                      std::memory_order_release);
                         return ent;
                     }
                     else {
                         spinner.cpu_yield();
                     }
                 }
-                else if (rd == stamp) {
+                else if ((stamp & slot_written_bit) == 0) {
                     std::atomic_thread_fence(std::memory_order_seq_cst);
                     const auto wd = write_.load(std::memory_order_relaxed);
-                    if ((wd & ~mark_bit_) == rd) {
+                    if ((wd & ~mark_bit_) == (rd & ~mark_bit_)) {
                         // if on same lap and index then we are full
                         return std::nullopt;
                     }
@@ -568,12 +574,10 @@ namespace __detail {
     private:
         std::unique_ptr<slot[]> buf_;
         size_type capacity_;
-        size_type mark_bit_;
-        size_type one_lap_;
         /// index of the next free location to write to
         std::atomic<size_type> write_{0};
         /// the index of the first element
-        std::atomic<size_type> read_{0};
+        std::atomic<size_type> read_{mark_bit_};
     };
     template<typename Backend>
     struct shared_data {

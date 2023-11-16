@@ -2,6 +2,7 @@
 #include <array>
 #include <chrono>
 #include <concepts>
+#include <latch>
 #include <optional>
 #include <ostream>
 #include <stop_token>
@@ -125,15 +126,25 @@ TEST_SUITE("mpmc")
         TEST_CASE("multi threaded unbuffered doesn't race")
         {
             transbeam::mpmc::__detail::bounded_ringbuf<int> rb{1};
+            std::latch ready{3};
             std::jthread t1{[&](std::stop_token stop) mutable {
+                ready.arrive_and_wait();
                 while (!stop.stop_requested()) {
                     rb.try_emplace(1);
                 }
             }};
 
             std::jthread t2{[&](auto stop) mutable {
+                ready.arrive_and_wait();
                 while (!stop.stop_requested()) {
                     rb.try_emplace(2);
+                }
+            }};
+
+            std::jthread t3{[&](auto stop) mutable {
+                ready.arrive_and_wait();
+                while (!stop.stop_requested()) {
+                    rb.try_emplace(3);
                 }
             }};
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
