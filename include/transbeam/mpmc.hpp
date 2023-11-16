@@ -101,9 +101,11 @@ namespace __detail {
     private:
         std::atomic_uint8_t state{0};
 
-        constexpr static auto write_bit = 0b1;
-        constexpr static auto read_bit = 0b10;
+        // clang-format off
+        constexpr static auto write_bit   = 0b001;
+        constexpr static auto read_bit    = 0b010;
         constexpr static auto destroy_bit = 0b100;
+        // clang-format on
     };
 
     /// this one is based on the crossbeam `list` flavour
@@ -436,7 +438,8 @@ namespace __detail {
         constexpr explicit bounded_ringbuf(size_type capacity)
             : buf_(new slot[capacity]), capacity_{capacity}
         {
-            if (capacity == std::numeric_limits<size_type>::max() ||
+            // a zero sized buffer makes no sense and we use the top 2 bits for flags in our indexes
+            if (capacity >= (std::numeric_limits<size_type>::max() >> 1) ||
                 capacity == 0) {
                 throw std::logic_error{
                     "invalid capacity, too big or too small"};
